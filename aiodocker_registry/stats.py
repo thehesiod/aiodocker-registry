@@ -21,15 +21,19 @@ class RepoStats:
         self._locks: Dict[str, asyncio.Lock] = dict()  # {blob_sum: Lock}
         self._image_info = defaultdict(lambda: {"total_shared_size": 0, 'tags': set()})
 
+        self._blob_pool: asyncpool.AsyncPool = None
+
     async def __aenter__(self):
         self._client = await RegistryClient("https://repos.fbn.org").__aenter__()
+        self._blob_pool = await asyncpool.AsyncPool(None, 100, 'blob_pool', self._logger, self._process_blob, raise_on_join=True, log_every_n=250).__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._blob_pool.__aexit__(exc_type, exc_val, exc_tb)
         await self._client.__aexit__(exc_type, exc_val, exc_tb)
 
     async def get_stats(self):
-        async with asyncpool.AsyncPool(None, 10, 'img_pool', self._logger, self._process_image, raise_on_join=True, log_every_n=5) as pool:
+        async with asyncpool.AsyncPool(None, 10, 'img_pool', self._logger, self._process_image, raise_on_join=True, log_every_n=10) as pool:
             async for image_name in self._client.catalog_pager():
                 await pool.push(self._client, image_name)
                 if pool.total_queued == 10:
@@ -53,7 +57,9 @@ class RepoStats:
         blobs = set()
 
         self._logger.info(f"Processing image: {image_name}")
-        async with asyncpool.AsyncPool(None, 10, f'{image_name} blob_pool', self._logger, self._process_blob, raise_on_join=True, log_every_n=200) as pool:
+        tag = None
+
+        try:
             async for tag in client.image_tag_pager(image_name):
                 tags.append(tag)
 
@@ -74,11 +80,19 @@ class RepoStats:
                     elif not blob_entry["info"]:
                         lock = self._locks[blob_sum] = asyncio.Lock()
                         await lock.acquire()
-                        await pool.push(image_name, blob_sum)
+                        await self._blob_pool.push(image_name, blob_sum)
                     else:
                         self._image_info[image_name]["total_shared_size"] += blob_entry["info"]["size"]
 
-        self._logger.info(f"image: {image_name} tags: {tags} total_size: {self._image_info[image_name]['total_shared_size']:,} blobs: {len(blobs)}")
+            # wait until all the data is available
+            for blob_sum in blobs:
+                if blob_sum in self._locks:
+                    await self._locks[blob_sum].acquire()
+
+            self._logger.info(f"image: {image_name} tags: {tags} total_shared_size: {self._image_info[image_name]['total_shared_size']:,} blobs: {len(blobs)}")
+        except:
+            self._logger.exception(f"Error processing image: {image_name} tag: {tag}")
+            raise
 
 
 async def main():
