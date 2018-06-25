@@ -1,13 +1,13 @@
-rate-limiter
+Asyncio Docker Registry Client
 ============
 
-Async and Sync rate-limiter implementations.
+asyncio docker registry client
 
 Install
 -------
 ::
 
-    $ pip install rate-limiter
+    $ pip install aiodocker-registry
 
 
 Basic Example
