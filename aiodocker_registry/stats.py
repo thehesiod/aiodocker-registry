@@ -97,7 +97,7 @@ class RepoStats:
 
     async def get_stats(self, max_image_names: int=None):
         async with asyncpool.AsyncPool(None, 100, 'blob_pool', self._logger, self._process_blob, raise_on_join=True, log_every_n=250) as blob_pool, \
-                asyncpool.AsyncPool(None, 10, 'img_pool', self._logger, self._process_image, raise_on_join=True, log_every_n=10) as pool:
+                asyncpool.AsyncPool(None, 100, 'img_pool', self._logger, self._process_image, raise_on_join=True, log_every_n=10) as pool:
             async for image_name in self._client.catalog_pager():
                 await pool.push(blob_pool, image_name)
                 if max_image_names is not None and pool.total_queued == max_image_names:

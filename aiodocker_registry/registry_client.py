@@ -24,42 +24,6 @@ def _parse_rfc822(dt: str) -> datetime:
     return dt
 
 
-# TODO: figure out what's hanging
-
-
-import time
-_logger = logging.getLogger('log_elapsed')
-class log_elapsed:
-    def __init__(self, name: str, min_start_delay=15):
-        self._name = name
-        self._min_start_delay = min_start_delay
-        self._start = None
-        self._hndl = None
-
-    def _enter(self):
-        self._start = time.time()
-
-        loop = asyncio.get_event_loop()
-        self._hndl = loop.call_later(self._min_start_delay, _logger.info, "still running {} at: {}".format(self._name, self._start))
-
-        return self
-
-    def _exit(self, exc_type, exc_val, exc_tb):
-        self._hndl.cancel()  # Ensure we don't print Start after elapsed
-
-    def __enter__(self):
-        return self._enter()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._exit(exc_type, exc_val, exc_tb)
-
-    async def __aenter__(self):
-        return self._enter()
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        return self._exit(exc_type, exc_val, exc_tb)
-
-
 class _Pager:
     def __init__(self, session: aiohttp.ClientSession,  url: yarl.URL, batch_size: int, response_key: str):
         self._session = session
@@ -76,7 +40,7 @@ class _Pager:
 
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def _get_next_batch(self, url: Union[yarl.URL, str]):
-        async with log_elapsed(f'_get_next_batch({url})'), self._session.get(url) as response:
+        async with self._session.get(url) as response:
             self._next = response.links.get('next', _empty_dict).get('url')
             self._batch = await response.json()
 
@@ -129,16 +93,14 @@ class RegistryClient:
 
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def get_image_manifest(self, image_name: str, tag: str):
-        # with aiohttp.helpers.CeilTimeout(15):
-        async with log_elapsed(f"get_image_manifest: {image_name}:{tag}"), self._session.get(self._url / 'v2' / image_name / 'manifests' / tag) as response:
+        async with self._session.get(self._url / 'v2' / image_name / 'manifests' / tag) as response:
             data = await response.json(content_type=None)
         return data
 
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def get_blob_info(self, image_name: str, blob_sum: str):
         info = dict()
-        # with aiohttp.helpers.CeilTimeout(15):
-        async with log_elapsed(f"get_blob_info: {image_name}:{blob_sum} 1"), self._session.head(self._url / 'v2' / image_name / 'blobs' / blob_sum) as response:
+        async with self._session.head(self._url / 'v2' / image_name / 'blobs' / blob_sum) as response:
             location = response.headers.get("Location")
             if location:
                 location = yarl.URL(location)
@@ -153,7 +115,7 @@ class RegistryClient:
                 info['modified'] = response['LastModified']
 
         if 's3location' not in info:
-            async with log_elapsed(f"get_blob_info: {image_name}:{blob_sum} 2"), self._session.get(self._url / 'v2' / image_name / 'blobs' / blob_sum, read_until_eof=False) as response:
+            async with self._session.get(self._url / 'v2' / image_name / 'blobs' / blob_sum, read_until_eof=False) as response:
                 info["size"] = int(response.headers["Content-Length"])
                 info["modified"] = _parse_rfc822(response.headers["Last-Modified"])
                 response.close()
