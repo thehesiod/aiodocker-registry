@@ -2,8 +2,11 @@ from typing import List, Tuple
 
 import gviz_api
 
+
 # Adapted from: https://developers.google.com/chart/interactive/docs/gallery/treemap
-_TEMPLATE = """<html>
+def _generate_html(json_data):
+    return """
+<html>
   <head>
   <title>TreeMap</title>
     <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
@@ -13,13 +16,13 @@ _TEMPLATE = """<html>
       function drawChart() {
         var json_table = new google.visualization.TreeMap(document.getElementById('chart_div'));
 
-        var data = new google.visualization.DataTable(%(json)s, 0.5);        
+        var data = new google.visualization.DataTable(""" + json_data + """);        
         json_table.draw(data);
       }
     </script>
   </head>
   <body>
-    <div id="chart_div"></div>
+    <div id="chart_div" style="width: 100%; height: 100%;"></div>
   </body>
 </html>
 """
@@ -30,10 +33,10 @@ def get_treemap(description: List[Tuple[str, str]], data: List[Tuple]):
     data_table = gviz_api.DataTable(description, data)
     #
     # # Creating a JSON string
-    json = data_table.ToJSon()
+    json_data = data_table.ToJSon()
 
     # Putting the JS code and JSon string into the template
-    return _TEMPLATE % vars()
+    return _generate_html(json_data)
 
 
 def print_example():

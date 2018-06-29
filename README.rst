@@ -13,6 +13,7 @@ Install
 Basic Example
 -------------
 
+```python
 async def main():
     async with RegistryClient("https://repos.fbn.org") as client:
         async for image_name in client.catalog_pager():
@@ -23,7 +24,7 @@ async def main():
 if __name__ == '__main__':
     import asyncio
     asyncio.get_event_loop().run_until_complete(main())
-
+```
 
 Requirements
 ------------
