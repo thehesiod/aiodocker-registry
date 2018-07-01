@@ -10,7 +10,7 @@ import pickle
 import hashlib
 
 # Module
-from registry_client import RegistryClient
+from registry_client import RegistryClient, S3RegistryClient
 from draw_chart import get_treemap
 
 # Third Party
@@ -37,11 +37,11 @@ def _get_blob_group_key(blob_group: List[str]):
 
 
 class RepoStats:
-    def __init__(self, url: str, shelf_path: str):
+    def __init__(self, bucket: str, prefix: str, shelf_path: str):
         """
         Docker Repository Statistics Helper
 
-        :param url: base url to docker repository
+        # :param url: base url to docker repository
         :param shelf_path: path to file to cache data to
         """
 
@@ -51,7 +51,9 @@ class RepoStats:
         self._inprogress_blobs: Set[str] = set()  # {blob_sum, ...}
         self._shelf_path = shelf_path
         self._shelf = None
-        self._repo_url = url
+        # self._repo_url = url
+        self._repo_bucket = bucket
+        self._repo_prefix = prefix
 
         # TODO: reduce data duplication after layout finalized
         self._blob_to_image_tags = defaultdict(lambda: {"info": None, "usage": defaultdict(set)})  # {blob_sum: {"info":, "usage": {image_name: {tag, ...}}}}
@@ -62,7 +64,7 @@ class RepoStats:
     async def __aenter__(self):
         if self._shelf_path:
             self._shelf = shelve.open(self._shelf_path, protocol=pickle.HIGHEST_PROTOCOL)
-        self._client = await RegistryClient("https://repos.fbn.org").__aenter__()
+        self._client = await S3RegistryClient(self._repo_bucket, self._repo_prefix).__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -209,7 +211,9 @@ async def main():
 
     parser = argparse.ArgumentParser(description='Docker Repository Statistics Tool')
     parser.add_argument('-num', type=int, default=50, help="Number of images to query")
-    parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
+    # parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
+    parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
+    parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
     parser.add_argument('-graph_path', required=True, type=str, help="Path to graph html to")
     parser.add_argument('-shelf_path', type=str, help="Path to file to cache repository info to")
     app_args = parser.parse_args()
