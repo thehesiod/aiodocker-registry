@@ -184,21 +184,26 @@ class S3RegistryClient:
         return _S3Pager(paginator.paginate(Bucket=self._bucket, Prefix=prefix, Delimiter='/'))
 
     def image_tag_pager(self, image_name: str):
+        # TODO: validate against repository API
         paginator = self._s3_client.get_paginator('list_objects')
         prefix = str(self._prefix / "repositories" / image_name / "_manifests" / "tags") + '/'
         return _S3Pager(paginator.paginate(Bucket=self._bucket, Prefix=prefix, Delimiter='/'))
 
     async def get_image_manifest(self, image_name: str, tag: str):
-        # There are three places where info on the image manifest lies:
-        #  1) repositories/{image_name}/_manifests/tags/{tag}/index/sha256/{hexdump of sha256 of manifest}/link
-        #  2) repositories/{image_name}/_manifests/tags/{tag}/current/link
-        # where the contents of both files look like: sha256:fdac5153d85a6d06015f0e3a4aab1ebf414f90174aef89073e33c441f70678cf
-        # so you can choose to find if by either a list-objects or get-object, gets are cheaper so we'll use those
+        # TODO: this is not correct, not matching repository API
+        # get pointer to current version of this tag
         response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "repositories" / image_name / "_manifests" / "tags" / tag / "current" / "link"))
         async with response["Body"] as stream:
             data = await stream.read()
             sha_prefix, sha256 = data.decode('utf-8').split(':', 1)
 
+        # now get the manifest link
+        response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "repositories" / image_name / "_manifests" / "tags" / tag / "index" / "sha256" / sha256 / "link"))
+        async with response["Body"] as stream:
+            data = await stream.read()
+            sha_prefix, sha256 = data.decode('utf-8').split(':', 1)
+
+        # now get the manifest
         response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "blobs" / "sha256" / sha256[:2] / sha256 / "data"))
         async with response["Body"] as stream:
             manifest = await stream.read()

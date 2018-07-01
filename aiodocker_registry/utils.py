@@ -25,7 +25,12 @@ async def main():
 
     app_args = parser.parse_args()
 
-    async with registry_client.S3RegistryClient(app_args.bucket, app_args.prefix) as client:
+    if hasattr(app_args, 'url'):
+        rclient = registry_client.RegistryClient(app_args.url)
+    else:
+        rclient = registry_client.S3RegistryClient(app_args.bucket, app_args.prefix)
+
+    async with rclient as client:
         if app_args.command == "manifest":
             manifest = await client.get_image_manifest(app_args.image_name, app_args.tag)
             pprint(manifest, width=200)
