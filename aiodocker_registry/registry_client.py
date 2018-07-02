@@ -98,9 +98,12 @@ class RegistryClient:
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def get_image_manifest(self, image_name: str, tag: str):
         with aiohttp.helpers.CeilTimeout(30):
-            async with self._session.get(self._url / 'v2' / image_name / 'manifests' / tag) as response:
-                data = await response.json(content_type=None)
-        return data
+            async with self._session.get(self._url / 'v2' / image_name / 'manifests' / tag, headers=dict(Accept='application/vnd.docker.distribution.manifest.v2+json')) as response:
+                manifest = await response.json(content_type=None)
+
+        for history in manifest.get('history', _empty_list):
+            history["v1Compatibility"] = json.loads(history["v1Compatibility"])
+        return manifest
 
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def get_blob_info(self, image_name: str, blob_sum: str):
@@ -168,7 +171,7 @@ class S3RegistryClient:
         self._prefix = PosixPath(prefix)
 
         boto_session = aiobotocore.session.get_session()
-        config = aiobotocore.config.AioConfig(connect_timeout=10, read_timeout=10, max_pool_connections=100)
+        config = aiobotocore.config.AioConfig(connect_timeout=15, read_timeout=15, max_pool_connections=100)
         self._s3_client = boto_session.create_client('s3', config=config)
 
     async def __aenter__(self):
@@ -208,7 +211,10 @@ class S3RegistryClient:
         async with response["Body"] as stream:
             manifest = await stream.read()
 
-        return json.loads(manifest)
+        manifest = json.loads(manifest)
+        for history in manifest.get('history', _empty_list):
+            history["v1Compatibility"] = json.loads(history["v1Compatibility"])
+        return manifest
 
     async def get_blob_info(self, image_name: str, blob_sum: str):
         pass

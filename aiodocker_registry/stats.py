@@ -37,7 +37,7 @@ def _get_blob_group_key(blob_group: List[str]):
 
 
 class RepoStats:
-    def __init__(self, bucket: str, prefix: str, shelf_path: str):
+    def __init__(self, client: Union[RegistryClient, S3RegistryClient], shelf_path: str):
         """
         Docker Repository Statistics Helper
 
@@ -52,8 +52,8 @@ class RepoStats:
         self._shelf_path = shelf_path
         self._shelf = None
         # self._repo_url = url
-        self._repo_bucket = bucket
-        self._repo_prefix = prefix
+
+        self._client = client
 
         # TODO: reduce data duplication after layout finalized
         self._blob_to_image_tags = defaultdict(lambda: {"info": None, "usage": defaultdict(set)})  # {blob_sum: {"info":, "usage": {image_name: {tag, ...}}}}
@@ -64,11 +64,9 @@ class RepoStats:
     async def __aenter__(self):
         if self._shelf_path:
             self._shelf = shelve.open(self._shelf_path, protocol=pickle.HIGHEST_PROTOCOL)
-        self._client = await S3RegistryClient(self._repo_bucket, self._repo_prefix).__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._client.__aexit__(exc_type, exc_val, exc_tb)
         self._shelf.close()
 
     def _get_blob_group_name(self, blob_group_key: int):
@@ -130,6 +128,7 @@ class RepoStats:
 
                     data.append((parent_blob_group_name, blob_group_name, blob_group_unique_size))
                     blob_group_name = parent_blob_group_name
+                    break  # TODO: find better way to show large multi-level trees
 
                 data.append((orig_blob_group_name, image_name, blob_group_unique_size))  # unfortunately you can't have two nodes point to this
 
@@ -167,19 +166,30 @@ class RepoStats:
                 tags.append(tag)
 
                 manifest_key = f"{image_name}:{tag}"
-                blob_group = self._shelf.get(manifest_key) if self._shelf is not None else None
-                if blob_group is None:
+                manifest = self._shelf.get(manifest_key) if self._shelf is not None else None
+                if manifest is None:
                     manifest = await self._client.get_image_manifest(image_name, tag)
                     if manifest is None:
                         manifest = await self._client.get_image_manifest(image_name, tag)
-                    blob_group = [layer['blobSum'] for layer in manifest['fsLayers']]
 
+                    assert manifest
                     if self._shelf is not None:
-                        self._shelf[manifest_key] = blob_group
+                        if manifest['schemaVersion'] == 1:
+                            del manifest['history']
+                            del manifest['signatures']
 
-                # layers are in reverse order of the docker file
-                blob_group = list(reversed(blob_group))
+                        self._shelf[manifest_key] = manifest
 
+                if manifest['schemaVersion'] == 1:
+                    # TODO: validate v1 fsLayers == reversed v2 layers
+                    layers = list(reversed([layer for layer in manifest['fsLayers']]))
+                    blob_group = [layer['blobSum'] for layer in layers]
+                else:
+                    assert manifest['schemaVersion'] == 2
+                    layers = [layer for layer in manifest['layers']]
+                    blob_group = [layer['digest'] for layer in layers]
+
+                # TODO: validate if we can use manifest["config"]["digest"]
                 blob_group_key = _get_blob_group_key(blob_group)
                 blob_group_entry = self._blob_groups[blob_group_key]
                 if blob_group_entry['blobs'] is None:  # avoid object churn
@@ -188,17 +198,22 @@ class RepoStats:
 
                 self._image_info[image_name][blob_group_key].add(tag)
 
-                for idx, blob_sum in enumerate(blob_group):
+                for layer in layers:
+                    blob_sum = layer["blobSum"] if manifest['schemaVersion'] == 1 else layer['digest']
                     blobs.add(blob_sum)
+
                     # add global reference
                     blob_entry = self._blob_to_image_tags[blob_sum]
                     blob_entry["usage"][image_name].add(tag)
 
-                    if not blob_entry["info"] and blob_sum not in self._inprogress_blobs:
-                        self._inprogress_blobs.add(blob_sum)
-                        await blob_pool.push(image_name, blob_sum)
-
-                    # NOTE: at this point we may not have the blob info
+                    if manifest['schemaVersion'] == 1:
+                        if not blob_entry["info"] and blob_sum not in self._inprogress_blobs:
+                            self._inprogress_blobs.add(blob_sum)
+                            await blob_pool.push(image_name, blob_sum)
+                    else:
+                        if not blob_entry["info"]:
+                            self._total_blob_size += layer["size"]
+                            self._blob_to_image_tags[blob_sum]["info"] = layer
 
             self._logger.info(f"image: {image_name} num tags: {len(tags)} num blobs: {len(blobs)}")
         except:
@@ -211,14 +226,19 @@ async def main():
 
     parser = argparse.ArgumentParser(description='Docker Repository Statistics Tool')
     parser.add_argument('-num', type=int, default=50, help="Number of images to query")
-    # parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
-    parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
-    parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
+    parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
+    # parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
+    # parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
     parser.add_argument('-graph_path', required=True, type=str, help="Path to graph html to")
     parser.add_argument('-shelf_path', type=str, help="Path to file to cache repository info to")
     app_args = parser.parse_args()
 
-    async with RepoStats(app_args.url, app_args.shelf_path) as stats:
+    if hasattr(app_args, 'url'):
+        rclient = RegistryClient(app_args.url)
+    else:
+        rclient = S3RegistryClient(app_args.bucket, app_args.prefix)
+
+    async with rclient, RepoStats(rclient, app_args.shelf_path) as stats:
         data = await stats.get_stats(app_args.num)
 
         with open(app_args.graph_path, 'w') as f:

@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 import asyncio
 import argparse
-from pprint import pprint
-
+import json
 import registry_client
 
 
 async def main():
     parser = argparse.ArgumentParser(description="Docker Registry Utilities")
-    # parser.add_argument('-url', required=True, help="Registry Base URL")
-    parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
-    parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
+    parser.add_argument('-url', required=True, help="Registry Base URL")
+    # parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
+    # parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
     subparsers = parser.add_subparsers(title="command", dest="command")
     subparsers.required = True
 
@@ -33,7 +32,7 @@ async def main():
     async with rclient as client:
         if app_args.command == "manifest":
             manifest = await client.get_image_manifest(app_args.image_name, app_args.tag)
-            pprint(manifest, width=200)
+            print(json.dumps(manifest))
         elif app_args.command == "images":
             async for image in client.catalog_pager():
                 print(image)
