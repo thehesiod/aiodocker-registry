@@ -63,11 +63,12 @@ class RepoStats:
 
     async def __aenter__(self):
         if self._shelf_path:
-            self._shelf = shelve.open(self._shelf_path, protocol=pickle.HIGHEST_PROTOCOL)
+            self._shelf = shelve.open(self._shelf_path, protocol=pickle.HIGHEST_PROTOCOL).__enter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        self._shelf.close()
+        if self._shelf_path:
+            self._shelf.__exit__(exc_type, exc_val, exc_tb)
 
     def _get_blob_group_name(self, blob_group_key: int):
         name = ", ".join(f"{image_name}:{tags}" for image_name, tags in self._blob_groups[blob_group_key]['images'].items())
@@ -175,8 +176,10 @@ class RepoStats:
                     assert manifest
                     if self._shelf is not None:
                         if manifest['schemaVersion'] == 1:
-                            del manifest['history']
-                            del manifest['signatures']
+                            if 'history' in manifest:
+                                del manifest['history']
+                            if 'signatures' in manifest:
+                                del manifest['signatures']
 
                         self._shelf[manifest_key] = manifest
 
@@ -226,9 +229,9 @@ async def main():
 
     parser = argparse.ArgumentParser(description='Docker Repository Statistics Tool')
     parser.add_argument('-num', type=int, default=50, help="Number of images to query")
-    parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
-    # parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
-    # parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
+    # parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
+    parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
+    parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
     parser.add_argument('-graph_path', required=True, type=str, help="Path to graph html to")
     parser.add_argument('-shelf_path', type=str, help="Path to file to cache repository info to")
     app_args = parser.parse_args()

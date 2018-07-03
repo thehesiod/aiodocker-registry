@@ -200,12 +200,6 @@ class S3RegistryClient:
             data = await stream.read()
             sha_prefix, sha256 = data.decode('utf-8').split(':', 1)
 
-        # now get the manifest link
-        response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "repositories" / image_name / "_manifests" / "tags" / tag / "index" / "sha256" / sha256 / "link"))
-        async with response["Body"] as stream:
-            data = await stream.read()
-            sha_prefix, sha256 = data.decode('utf-8').split(':', 1)
-
         # now get the manifest
         response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "blobs" / "sha256" / sha256[:2] / sha256 / "data"))
         async with response["Body"] as stream:
@@ -217,4 +211,7 @@ class S3RegistryClient:
         return manifest
 
     async def get_blob_info(self, image_name: str, blob_sum: str):
-        pass
+        prefix, shasum = blob_sum.split(':', 1)
+        key = str(self._prefix / "blobs" / "sha256" / shasum[:2] / shasum / "data")
+        response = await self._s3_client.head_object(Bucket=self._bucket, Key=key)
+        return {'size': response['ContentLength'], 'bucket': self._bucket, 'key': key}
