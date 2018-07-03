@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
 import argparse
-import logging
 from collections import defaultdict
 import logging
 from typing import Dict, Tuple, Union, Set, List
@@ -98,10 +97,14 @@ class RepoStats:
 
     async def get_stats(self, max_image_names: int=None):
         async with asyncpool.AsyncPool(None, 100, 'blob_pool', self._logger, self._process_blob, raise_on_join=True, log_every_n=250) as blob_pool, \
-                asyncpool.AsyncPool(None, 100, 'img_pool', self._logger, self._process_image, raise_on_join=True, log_every_n=10) as pool:
+                asyncpool.AsyncPool(None, 100, 'img_pool', self._logger, self._process_image_tag, raise_on_join=True, log_every_n=250) as image_tag_pool:
+            image_num = 0
             async for image_name in self._client.catalog_pager():
-                await pool.push(blob_pool, image_name)
-                if max_image_names is not None and pool.total_queued == max_image_names:
+                async for tag in self._client.image_tag_pager(image_name):
+                    await image_tag_pool.push(blob_pool, image_name, tag)
+
+                image_num += 1
+                if max_image_names is not None and image_num == max_image_names:
                     break
 
         description = [
@@ -155,73 +158,57 @@ class RepoStats:
         finally:
             self._inprogress_blobs.remove(blob_sum)
 
-    async def _process_image(self, blob_pool: asyncpool.AsyncPool, image_name: str):
-        tags = list()
-        blobs = set()
+    async def _process_image_tag(self, blob_pool: asyncpool.AsyncPool, image_name: str, tag: str):
+        manifest_key = f"{image_name}:{tag}"
+        manifest = self._shelf.get(manifest_key) if self._shelf is not None else None
+        if manifest is None:
+            manifest = await self._client.get_image_manifest(image_name, tag)
+            if manifest is None:
+                manifest = await self._client.get_image_manifest(image_name, tag)
 
-        self._logger.info(f"Processing image: {image_name}")
-        tag = None
-
-        try:
-            async for tag in self._client.image_tag_pager(image_name):
-                tags.append(tag)
-
-                manifest_key = f"{image_name}:{tag}"
-                manifest = self._shelf.get(manifest_key) if self._shelf is not None else None
-                if manifest is None:
-                    manifest = await self._client.get_image_manifest(image_name, tag)
-                    if manifest is None:
-                        manifest = await self._client.get_image_manifest(image_name, tag)
-
-                    assert manifest
-                    if self._shelf is not None:
-                        if manifest['schemaVersion'] == 1:
-                            if 'history' in manifest:
-                                del manifest['history']
-                            if 'signatures' in manifest:
-                                del manifest['signatures']
-
-                        self._shelf[manifest_key] = manifest
-
+            assert manifest
+            if self._shelf is not None:
                 if manifest['schemaVersion'] == 1:
-                    # TODO: validate v1 fsLayers == reversed v2 layers
-                    layers = list(reversed([layer for layer in manifest['fsLayers']]))
-                    blob_group = [layer['blobSum'] for layer in layers]
-                else:
-                    assert manifest['schemaVersion'] == 2
-                    layers = [layer for layer in manifest['layers']]
-                    blob_group = [layer['digest'] for layer in layers]
+                    if 'history' in manifest:
+                        del manifest['history']
+                    if 'signatures' in manifest:
+                        del manifest['signatures']
 
-                # TODO: validate if we can use manifest["config"]["digest"]
-                blob_group_key = _get_blob_group_key(blob_group)
-                blob_group_entry = self._blob_groups[blob_group_key]
-                if blob_group_entry['blobs'] is None:  # avoid object churn
-                    blob_group_entry['blobs'] = blob_group
-                blob_group_entry['images'][image_name].add(tag)
+                self._shelf[manifest_key] = manifest
 
-                self._image_info[image_name][blob_group_key].add(tag)
+        if manifest['schemaVersion'] == 1:
+            # TODO: validate v1 fsLayers == reversed v2 layers
+            layers = list(reversed([layer for layer in manifest['fsLayers']]))
+            blob_group = [layer['blobSum'] for layer in layers]
+        else:
+            assert manifest['schemaVersion'] == 2
+            layers = [layer for layer in manifest['layers']]
+            blob_group = [layer['digest'] for layer in layers]
 
-                for layer in layers:
-                    blob_sum = layer["blobSum"] if manifest['schemaVersion'] == 1 else layer['digest']
-                    blobs.add(blob_sum)
+        # TODO: validate if we can use manifest["config"]["digest"]
+        blob_group_key = _get_blob_group_key(blob_group)
+        blob_group_entry = self._blob_groups[blob_group_key]
+        if blob_group_entry['blobs'] is None:  # avoid object churn
+            blob_group_entry['blobs'] = blob_group
+        blob_group_entry['images'][image_name].add(tag)
 
-                    # add global reference
-                    blob_entry = self._blob_to_image_tags[blob_sum]
-                    blob_entry["usage"][image_name].add(tag)
+        self._image_info[image_name][blob_group_key].add(tag)
 
-                    if manifest['schemaVersion'] == 1:
-                        if not blob_entry["info"] and blob_sum not in self._inprogress_blobs:
-                            self._inprogress_blobs.add(blob_sum)
-                            await blob_pool.push(image_name, blob_sum)
-                    else:
-                        if not blob_entry["info"]:
-                            self._total_blob_size += layer["size"]
-                            self._blob_to_image_tags[blob_sum]["info"] = layer
+        for layer in layers:
+            blob_sum = layer["blobSum"] if manifest['schemaVersion'] == 1 else layer['digest']
 
-            self._logger.info(f"image: {image_name} num tags: {len(tags)} num blobs: {len(blobs)}")
-        except:
-            self._logger.exception(f"Error processing image: {image_name} tag: {tag}")
-            raise
+            # add global reference
+            blob_entry = self._blob_to_image_tags[blob_sum]
+            blob_entry["usage"][image_name].add(tag)
+
+            if manifest['schemaVersion'] == 1:
+                if not blob_entry["info"] and blob_sum not in self._inprogress_blobs:
+                    self._inprogress_blobs.add(blob_sum)
+                    await blob_pool.push(image_name, blob_sum)
+            else:
+                if not blob_entry["info"]:
+                    self._total_blob_size += layer["size"]
+                    self._blob_to_image_tags[blob_sum]["info"] = layer
 
 
 async def main():
@@ -249,5 +236,4 @@ async def main():
 
 
 if __name__ == '__main__':
-    import asyncio
     asyncio.get_event_loop().run_until_complete(main())
