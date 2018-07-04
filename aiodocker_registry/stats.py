@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import argparse
+import os
 from collections import defaultdict
 import logging
 from typing import Dict, Tuple, Union, Set, List
@@ -95,15 +96,18 @@ class RepoStats:
 
         return unique_size, None
 
-    async def get_stats(self, max_image_names: int=None):
-        async with asyncpool.AsyncPool(None, 100, 'blob_pool', self._logger, self._process_blob, raise_on_join=True, log_every_n=250) as blob_pool, \
-                asyncpool.AsyncPool(None, 100, 'img_pool', self._logger, self._process_image_tag, raise_on_join=True, log_every_n=250) as image_tag_pool:
+    async def get_stats(self, root_path: str, max_image_names: int=None):
+        async with asyncpool.AsyncPool(None, 100, 'blob_pool', self._logger, self._process_blob, raise_on_join=True, log_every_n=1000) as blob_pool, \
+                asyncpool.AsyncPool(None, 100, 'img_pool', self._logger, self._process_image_tag, raise_on_join=True, log_every_n=1000) as image_tag_pool:
             image_num = 0
             async for image_name in self._client.catalog_pager():
+                num_tags = 0
                 async for tag in self._client.image_tag_pager(image_name):
+                    num_tags += 1
                     await image_tag_pool.push(blob_pool, image_name, tag)
 
                 image_num += 1
+                self._logger.info(f"{image_name} pushed num tags: {num_tags}")
                 if max_image_names is not None and image_num == max_image_names:
                     break
 
@@ -113,13 +117,15 @@ class RepoStats:
             ('Size (size)', 'number'),
         ]
 
-        data = []
+        g_data = []
 
         # This needs to be done from parent to child
         g_instances = _BlobGroupInstanceHelper()
 
         for image_name, blob_groups in self._image_info.items():
             image_unique_size = 0
+
+            img_data = []
 
             for blob_group_key, tags in blob_groups.items():
                 blob_group_unique_size, parent_blob_group_key = self._get_blob_group_info(blob_group_key)
@@ -130,19 +136,21 @@ class RepoStats:
                     parent_blob_group_name = g_instances.new_instance(self._get_blob_group_name(parent_blob_group_key))
                     blob_group_unique_size, parent_blob_group_key = self._get_blob_group_info(parent_blob_group_key)
 
-                    data.append((parent_blob_group_name, blob_group_name, blob_group_unique_size))
+                    img_data.append((parent_blob_group_name, blob_group_name, blob_group_unique_size))
                     blob_group_name = parent_blob_group_name
                     break  # TODO: find better way to show large multi-level trees
 
-                data.append((orig_blob_group_name, image_name, blob_group_unique_size))  # unfortunately you can't have two nodes point to this
+                img_data.append((orig_blob_group_name, "root", blob_group_unique_size))  # unfortunately you can't have two nodes point to this
 
-            data.append((image_name, 'root', image_unique_size))
+            g_data.append((image_name, 'root', image_unique_size))
+            img_data.append(("root", None, image_unique_size))
+            get_treemap(description, img_data, os.path.join(root_path, f"{image_name}.html"), False)
 
-        data.append(("root", None, self._total_blob_size))
+        g_data.append(("root", None, self._total_blob_size))
 
         self._logger.info(f"Total num blobs: {len(self._blob_to_image_tags)} size: {self._total_blob_size:,}")
 
-        return get_treemap(description, data)
+        get_treemap(description, g_data, os.path.join(root_path, "root.html"), True)
 
     async def _process_blob(self, image_name: str, blob_sum: str):
         try:
@@ -215,7 +223,7 @@ async def main():
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser(description='Docker Repository Statistics Tool')
-    parser.add_argument('-num', type=int, default=50, help="Number of images to query")
+    parser.add_argument('-num', type=int, help="Number of images to query")
     # parser.add_argument('-url', required=True, type=str, help='Repository Base URL')
     parser.add_argument('-bucket', required=True, help="S3 Bucket of Repository")
     parser.add_argument('-prefix', required=True, help="S3 Bucket Prefix of Repository")
@@ -224,15 +232,12 @@ async def main():
     app_args = parser.parse_args()
 
     if hasattr(app_args, 'url'):
-        rclient = RegistryClient(app_args.url)
+        rclient = RegistryClient(app_args.url, max_connections=150)
     else:
-        rclient = S3RegistryClient(app_args.bucket, app_args.prefix)
+        rclient = S3RegistryClient(app_args.bucket, app_args.prefix, max_connections=150)
 
     async with rclient, RepoStats(rclient, app_args.shelf_path) as stats:
-        data = await stats.get_stats(app_args.num)
-
-        with open(app_args.graph_path, 'w') as f:
-            f.write(data)
+        await stats.get_stats(app_args.graph_path, app_args.num)
 
 
 if __name__ == '__main__':

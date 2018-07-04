@@ -43,7 +43,7 @@ class _Pager:
 
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def _get_next_batch(self, url: Union[yarl.URL, str]):
-        with aiohttp.helpers.CeilTimeout(30):
+        with aiohttp.helpers.CeilTimeout(180):
             async with self._session.get(url) as response:
                 self._next = response.links.get('next', _empty_dict).get('url')
                 self._batch = await response.json()
@@ -66,17 +66,18 @@ class _Pager:
 
 
 class RegistryClient:
-    def __init__(self, url: str):
+    def __init__(self, url: str, max_connections: int=100):
         """
         Creates docker registry client instance based on V2 docker registry REST API
         :param url: base url to docker registry endpoint
+        :param max_connections: maximum number of connections to use
         """
         self._url = yarl.URL(url)
         self._session: aiohttp.ClientSession = None
         self._logger = logging.getLogger('RegistryClient')
 
         boto_session = aiobotocore.session.get_session()
-        config = aiobotocore.config.AioConfig(connect_timeout=10, read_timeout=10, max_pool_connections=100)
+        config = aiobotocore.config.AioConfig(connect_timeout=10, read_timeout=10, max_pool_connections=max_connections)
         self._s3_client = boto_session.create_client('s3', config=config)
 
     async def __aenter__(self):
@@ -97,7 +98,7 @@ class RegistryClient:
 
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def get_image_manifest(self, image_name: str, tag: str):
-        with aiohttp.helpers.CeilTimeout(30):
+        with aiohttp.helpers.CeilTimeout(180):
             async with self._session.get(self._url / 'v2' / image_name / 'manifests' / tag, headers=dict(Accept='application/vnd.docker.distribution.manifest.v2+json')) as response:
                 manifest = await response.json(content_type=None)
 
@@ -108,7 +109,7 @@ class RegistryClient:
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=2)
     async def get_blob_info(self, image_name: str, blob_sum: str):
         info = dict()
-        with aiohttp.helpers.CeilTimeout(30):
+        with aiohttp.helpers.CeilTimeout(180):
             async with self._session.head(self._url / 'v2' / image_name / 'blobs' / blob_sum) as response:
                 location = response.headers.get("Location")
                 if location:
@@ -124,7 +125,7 @@ class RegistryClient:
                     info['modified'] = response['LastModified']
 
         if 's3location' not in info:
-            with aiohttp.helpers.CeilTimeout(30):
+            with aiohttp.helpers.CeilTimeout(180):
                 async with self._session.get(self._url / 'v2' / image_name / 'blobs' / blob_sum, read_until_eof=False) as response:
                     info["size"] = int(response.headers["Content-Length"])
                     info["modified"] = _parse_rfc822(response.headers["Last-Modified"])
@@ -140,7 +141,8 @@ class _S3Pager:
         self._next = None
 
     async def _get_next_batch(self):
-        response = await self._async_iter.__anext__()
+        with aiohttp.helpers.CeilTimeout(180):
+            response = await self._async_iter.__anext__()
         self._prefix_len = len(response['Prefix'])
         self._next = response.get('CommonPrefixes', [])
 
@@ -161,17 +163,18 @@ class _S3Pager:
 
 
 class S3RegistryClient:
-    def __init__(self, bucket: str, prefix: str):
+    def __init__(self, bucket: str, prefix: str, max_connections: int=100):
         """
         Creates docker registry client instance based on S3 registry backend
         :param bucket: S3 bucket of registry
         :param prefix: S3 bucket prefix, ex: docker/v2/dev/docker/registry/v2, where "blobs" and "repositories" folders exist
+        :param max_connections: maximum number of connections to use
         """
         self._bucket = bucket
         self._prefix = PosixPath(prefix)
 
         boto_session = aiobotocore.session.get_session()
-        config = aiobotocore.config.AioConfig(connect_timeout=15, read_timeout=15, max_pool_connections=100)
+        config = aiobotocore.config.AioConfig(connect_timeout=15, read_timeout=15, max_pool_connections=max_connections)
         self._s3_client = boto_session.create_client('s3', config=config)
 
     async def __aenter__(self):
@@ -195,15 +198,17 @@ class S3RegistryClient:
     async def get_image_manifest(self, image_name: str, tag: str):
         # TODO: this is not correct, not matching repository API
         # get pointer to current version of this tag
-        response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "repositories" / image_name / "_manifests" / "tags" / tag / "current" / "link"))
-        async with response["Body"] as stream:
-            data = await stream.read()
-            sha_prefix, sha256 = data.decode('utf-8').split(':', 1)
+        with aiohttp.helpers.CeilTimeout(180):
+            response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "repositories" / image_name / "_manifests" / "tags" / tag / "current" / "link"))
+            async with response["Body"] as stream:
+                data = await stream.read()
+                sha_prefix, sha256 = data.decode('utf-8').split(':', 1)
 
         # now get the manifest
-        response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "blobs" / "sha256" / sha256[:2] / sha256 / "data"))
-        async with response["Body"] as stream:
-            manifest = await stream.read()
+        with aiohttp.helpers.CeilTimeout(180):
+            response = await self._s3_client.get_object(Bucket=self._bucket, Key=str(self._prefix / "blobs" / "sha256" / sha256[:2] / sha256 / "data"))
+            async with response["Body"] as stream:
+                manifest = await stream.read()
 
         manifest = json.loads(manifest)
         for history in manifest.get('history', _empty_list):
@@ -213,5 +218,6 @@ class S3RegistryClient:
     async def get_blob_info(self, image_name: str, blob_sum: str):
         prefix, shasum = blob_sum.split(':', 1)
         key = str(self._prefix / "blobs" / "sha256" / shasum[:2] / shasum / "data")
-        response = await self._s3_client.head_object(Bucket=self._bucket, Key=key)
+        with aiohttp.helpers.CeilTimeout(180):
+            response = await self._s3_client.head_object(Bucket=self._bucket, Key=key)
         return {'size': response['ContentLength'], 'bucket': self._bucket, 'key': key}
