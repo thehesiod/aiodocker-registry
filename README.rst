@@ -1,7 +1,7 @@
 Asyncio Docker Registry Client
-============
+==============================
 
-asyncio docker registry client
+asyncio docker registry client and stats tool
 
 Install
 -------
@@ -14,6 +14,7 @@ Basic Example
 -------------
 
 .. code:: python
+
     async def main():
         async with RegistryClient("https://repo.company.org") as client:
             async for image_name in client.catalog_pager():
@@ -28,4 +29,4 @@ Basic Example
 
 Requirements
 ------------
-* Python 3.6+
+* Python_ 3.6+
