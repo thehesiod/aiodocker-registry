@@ -1,0 +1,40 @@
+<html>
+  <head>
+  <title>TreeMap</title>
+    <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+    <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+    <script>
+      google.charts.load('current', {'packages':['treemap']});
+      google.charts.setOnLoadCallback(drawChart);
+
+      var treemap = null;
+      var data = null;
+
+      function drawChart(json_file = "root.json") {
+          var jsonData = $.ajax({
+              url: json_file,
+              dataType: "json",
+              async: false
+              }).responseText;
+
+        data = new google.visualization.DataTable(jsonData);
+        treemap = new google.visualization.TreeMap(document.getElementById('chart_div'));
+
+        if(json_file === "root.json") {
+            google.visualization.events.addListener(treemap, 'select', selectHandler);
+        }
+
+        treemap.draw(data);
+      }
+
+      function selectHandler(e) {
+          var selectedItem = treemap.getSelection()[0];
+          var value = data.getValue(selectedItem.row, 0);
+          drawChart(value + ".json");
+      }
+    </script>
+  </head>
+  <body>
+    <div id="chart_div" style="width: 100%; height: 100%;"></div>
+  </body>
+</html>

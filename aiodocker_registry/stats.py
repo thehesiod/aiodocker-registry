@@ -117,7 +117,7 @@ class RepoStats:
             ('Size (size)', 'number'),
         ]
 
-        g_data = []
+        data_dict = dict(root=[])
 
         # This needs to be done from parent to child
         g_instances = _BlobGroupInstanceHelper()
@@ -125,7 +125,7 @@ class RepoStats:
         for image_name, blob_groups in self._image_info.items():
             image_unique_size = 0
 
-            img_data = []
+            img_data = data_dict[image_name] = []
 
             for blob_group_key, tags in blob_groups.items():
                 blob_group_unique_size, parent_blob_group_key = self._get_blob_group_info(blob_group_key)
@@ -138,19 +138,18 @@ class RepoStats:
 
                     img_data.append((parent_blob_group_name, blob_group_name, blob_group_unique_size))
                     blob_group_name = parent_blob_group_name
-                    break  # TODO: find better way to show large multi-level trees
+                    # break  # TODO: find better way to show large multi-level trees
 
                 img_data.append((orig_blob_group_name, "root", blob_group_unique_size))  # unfortunately you can't have two nodes point to this
 
-            g_data.append((image_name, 'root', image_unique_size))
+            data_dict["root"].append((image_name, 'root', image_unique_size))
             img_data.append(("root", None, image_unique_size))
-            get_treemap(description, img_data, os.path.join(root_path, f"{image_name}.html"), False)
 
-        g_data.append(("root", None, self._total_blob_size))
+        data_dict["root"].append(("root", None, self._total_blob_size))
 
         self._logger.info(f"Total num blobs: {len(self._blob_to_image_tags)} size: {self._total_blob_size:,}")
 
-        get_treemap(description, g_data, os.path.join(root_path, "root.html"), True)
+        get_treemap(description, data_dict, root_path)
 
     async def _process_blob(self, image_name: str, blob_sum: str):
         try:
